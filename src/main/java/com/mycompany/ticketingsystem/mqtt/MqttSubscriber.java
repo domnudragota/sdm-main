@@ -1,5 +1,6 @@
 package com.mycompany.ticketingsystem.mqtt;
 
+import com.mycompany.ticketingsystem.service.MessageService;
 import org.eclipse.paho.client.mqttv3.*;
 
 public class MqttSubscriber implements MqttCallback {
@@ -26,11 +27,14 @@ public class MqttSubscriber implements MqttCallback {
 
     @Override
     public void messageArrived(String topic, MqttMessage message) throws Exception {
-        System.out.println("Received message on topic " + topic + ": " + new String(message.getPayload()));
+        String messageContent = new String(message.getPayload());
+        System.out.println("Received message on topic " + topic + ": " + messageContent);
+        // Store the incoming message in the shared MessageStore.
+        MessageService.getInstance().addMessage(messageContent);
     }
 
     @Override
     public void deliveryComplete(IMqttDeliveryToken token) {
-        // Not used in Subscriber
+        // Not used in subscriber.
     }
 }
