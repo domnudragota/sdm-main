@@ -1,19 +1,24 @@
 package com.mycompany.ticketingsystem.service;
 
-import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
+import com.google.api.core.ApiFuture;
+import com.google.cloud.firestore.Firestore;
+import com.google.cloud.firestore.WriteResult;
+import com.mycompany.ticketingsystem.config.FirebaseConfig;
+import com.mycompany.ticketingsystem.model.Ticket;
 
 public class MessageService {
-    // Use a thread-safe list (CopyOnWriteArrayList) for concurrent access
-    private List<String> messages = new CopyOnWriteArrayList<>();
+    private final Firestore db;
+    private static volatile MessageService instance;
 
-    // Singleton instance
-    private static MessageService instance;
+    private MessageService() {
+        try {
+            FirebaseConfig.init();
+            this.db = FirebaseConfig.getDb();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to initialize Firebase", e);
+        }
+    }
 
-    // Private constructor prevents instantiation from other classes
-    private MessageService() {}
-
-    // Double-checked locking for thread-safe singleton access
     public static MessageService getInstance() {
         if (instance == null) {
             synchronized (MessageService.class) {
@@ -25,11 +30,23 @@ public class MessageService {
         return instance;
     }
 
-    public void addMessage(String message) {
-        messages.add(message);
-    }
+    /**
+     * Persists a Ticket to Firestore under the "tickets" collection asynchronously.
+     */
+    public void addTicket(Ticket ticket) {
+        ApiFuture<WriteResult> future = db.collection("tickets")
+                .document(ticket.getTicketID())
+                .set(ticket);
 
-    public List<String> getMessages() {
-        return messages;
+        // Add a listener to handle success or failure without blocking the MQTT thread
+        future.addListener(() -> {
+            try {
+                WriteResult result = future.get();
+                System.out.println("Ticket saved at: " + result.getUpdateTime());
+            } catch (Exception e) {
+                System.err.println("Error saving ticket: " + e.getMessage());
+                e.printStackTrace();
+            }
+        }, Runnable::run);
     }
 }

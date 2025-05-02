@@ -13,21 +13,23 @@ public class CombinedMain {
     public static void main(String[] args) {
         // Start the web server in a separate thread
         Thread webServerThread = new Thread(() -> {
-            // WebServer starts and listens on port 4567
-            WebServer.main(new String[]{});
+            try {
+                WebServer.main(new String[]{});
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
         });
         webServerThread.start();
 
-        // Let the web server initialize (optional: wait a couple of seconds)
+        // Let the web server initialize
         try {
             TimeUnit.SECONDS.sleep(2);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
 
-        // Now start the MQTT publisher and subscriber in this same JVM.
         try {
-            // Instantiate the MQTT subscriber (it will start listening on your shared MessageStore)
+            // Start the MQTT subscriber
             MqttSubscriber subscriber = new MqttSubscriber();
 
             // Create the MQTT publisher
@@ -35,20 +37,20 @@ public class CombinedMain {
 
             // Publish a continuous stream of ticket events.
             for (int i = 1; i <= 10; i++) {
-                // Create a new Ticket (each with a unique ID)
-                Ticket ticket = new Ticket("TCKT" + i, "single-ride", 2.50, "2025-04-01", "2025-04-30");
-                String ticketInfo = "Ticket ID: " + ticket.getTicketID() +
-                        ", Type: " + ticket.getTicketType() +
-                        ", Price: " + ticket.getPrice();
+                Ticket ticket = new Ticket(
+                        "TCKT" + i,
+                        "single-ride",
+                        2.50,
+                        "2025-04-01",
+                        "2025-04-30"
+                );
 
-                // Publish the ticket information
-                publisher.publishTicketInfo(ticketInfo);
+                // Now passing the Ticket object instead of a String
+                publisher.publishTicketInfo(ticket);
 
-                // Wait 5 seconds before sending the next ticket event.
                 TimeUnit.SECONDS.sleep(5);
             }
 
-            // Disconnect the publisher after publishing all messages.
             publisher.disconnect();
 
         } catch (MqttException | InterruptedException e) {
