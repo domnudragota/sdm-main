@@ -1,60 +1,62 @@
 package com.mycompany.ticketingsystem;
 
+import com.mycompany.ticketingsystem.config.FirebaseConfig;
 import com.mycompany.ticketingsystem.mqtt.MqttPublisher;
 import com.mycompany.ticketingsystem.mqtt.MqttSubscriber;
-import com.mycompany.ticketingsystem.web.WebServer;
 import com.mycompany.ticketingsystem.model.Ticket;
-import org.eclipse.paho.client.mqttv3.MqttException;
+import com.mycompany.ticketingsystem.web.WebServer;
+import com.google.cloud.firestore.DocumentReference;
+import com.google.cloud.firestore.Firestore;
 
-import java.util.concurrent.TimeUnit;
+import java.time.LocalDate;
 
 public class CombinedMain {
+    public static void main(String[] args) throws Exception {
+        // 1) Init Firebase & clear tickets
+        FirebaseConfig.init();
+        Firestore db = FirebaseConfig.getDb();
+        for (DocumentReference doc : db.collection("tickets").listDocuments()) {
+            doc.delete().get();
+        }
+        System.out.println("Cleared tickets collection on startup.");
 
-    public static void main(String[] args) {
-        // Start the web server in a separate thread
-        Thread webServerThread = new Thread(() -> {
+        // 2) Start web server in a daemon thread
+        Thread webThread = new Thread(() -> {
             try {
                 WebServer.main(new String[]{});
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }
-        });
-        webServerThread.start();
+        }, "WebServer-Thread");
+        webThread.setDaemon(true);
+        webThread.start();
 
-        // Let the web server initialize
-        try {
-            TimeUnit.SECONDS.sleep(2);
-        } catch (InterruptedException e) {
-            e.printStackTrace();
+        // 3) Give Spark 2 seconds to bind its port and set up routes
+        Thread.sleep(2000);
+        System.out.println("Web server should now be up on port 4567.");
+
+        // 4) Start MQTT subscriber & publisher
+        MqttSubscriber subscriber = new MqttSubscriber();
+        MqttPublisher  publisher  = new MqttPublisher();
+
+        // 5) Publish 10 tickets, one every 3s
+        LocalDate today    = LocalDate.now();
+        LocalDate tomorrow = today.plusDays(1);
+        for (int i = 1; i <= 10; i++) {
+            Ticket ticket = new Ticket(
+                    "TCKT" + i,
+                    "single-ride",
+                    2.50,
+                    today.toString(),
+                    tomorrow.toString()
+            );
+            publisher.publishTicketInfo(ticket);
+            Thread.sleep(3000);
         }
 
-        try {
-            // Start the MQTT subscriber
-            MqttSubscriber subscriber = new MqttSubscriber();
-
-            // Create the MQTT publisher
-            MqttPublisher publisher = new MqttPublisher();
-
-            // Publish a continuous stream of ticket events.
-            for (int i = 1; i <= 10; i++) {
-                Ticket ticket = new Ticket(
-                        "TCKT" + i,
-                        "single-ride",
-                        2.50,
-                        "2025-04-01",
-                        "2025-04-30"
-                );
-
-                // Now passing the Ticket object instead of a String
-                publisher.publishTicketInfo(ticket);
-
-                TimeUnit.SECONDS.sleep(5);
-            }
-
-            publisher.disconnect();
-
-        } catch (MqttException | InterruptedException e) {
-            e.printStackTrace();
-        }
+        // 6) Cleanup
+        publisher.disconnect();
+        System.out.println("Simulation complete, exiting.");
+        System.exit(0);
     }
 }

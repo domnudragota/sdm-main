@@ -6,52 +6,59 @@ import com.mycompany.ticketingsystem.service.MessageService;
 import org.eclipse.paho.client.mqttv3.*;
 
 public class MqttSubscriber implements MqttCallback {
-
     private static final String BROKER_URL = "tcp://localhost:1883";
-    private static final String CLIENT_ID = "TicketSystemSubscriber";
-    private static final String TOPIC = "tickets/sold";
+    private static final String CLIENT_ID  = "TicketSystemSubscriber";
 
     private final MqttClient mqttClient;
     private final Gson gson = new Gson();
 
     public MqttSubscriber() throws MqttException {
-        mqttClient = new MqttClient(BROKER_URL, CLIENT_ID);
-        MqttConnectOptions options = new MqttConnectOptions();
-        options.setCleanSession(false);            // keep subscriptions across reconnects
-        options.setAutomaticReconnect(true);       // auto-reconnect on connection loss
+        this.mqttClient = new MqttClient(BROKER_URL, CLIENT_ID);
+        MqttConnectOptions opts = new MqttConnectOptions();
+        opts.setCleanSession(false);
+        opts.setAutomaticReconnect(true);
+
         mqttClient.setCallback(this);
-        mqttClient.connect(options);
-        mqttClient.subscribe(TOPIC);
-        System.out.println("Subscribed to topic: " + TOPIC);
+        mqttClient.connect(opts);
+
+        // subscribe to all topics we care about
+        mqttClient.subscribe(Topics.TICKET_ISSUE, 1);
+        mqttClient.subscribe(Topics.TICKET_ISSUED, 1);
+        mqttClient.subscribe(Topics.PAYMENT_STATUS, 1);
+        mqttClient.subscribe(Topics.JOURNEY_PLAN, 1);
+
+        System.out.println("Subscribed to topics:");
+        System.out.println("  " + Topics.TICKET_ISSUE);
+        System.out.println("  " + Topics.TICKET_ISSUED);
+        System.out.println("  " + Topics.PAYMENT_STATUS);
+        System.out.println("  " + Topics.JOURNEY_PLAN);
     }
 
     @Override
     public void connectionLost(Throwable cause) {
         System.err.println("MQTT connection lost: " + cause.getMessage());
-        // automaticReconnect=true and cleanSession=false will handle reconnection
     }
 
     @Override
     public void messageArrived(String topic, MqttMessage message) {
-        // Wrap entire logic to prevent exceptions from escaping and blocking the callback
         try {
             String payload = new String(message.getPayload(), "UTF-8");
-            System.out.println("Received message on topic [" + topic + "]: " + payload);
+            System.out.println("Received on [" + topic + "]: " + payload);
 
-            // Deserialize JSON into a Ticket object
-            Ticket ticket = gson.fromJson(payload, Ticket.class);
-
-            // Persist the ticket asynchronously via MessageService
-            MessageService.getInstance().addTicket(ticket);
+            if (Topics.TICKET_ISSUED.equals(topic)) {
+                Ticket ticket = gson.fromJson(payload, Ticket.class);
+                MessageService.getInstance().addTicket(ticket);
+            } else {
+                System.out.println("Unhandled topic: " + topic);
+            }
         } catch (Exception e) {
-            // Log and swallow any error so the MQTT client thread remains healthy
-            System.err.println("Error processing incoming MQTT message: " + e.getMessage());
+            System.err.println("Error processing MQTT message: " + e.getMessage());
             e.printStackTrace();
         }
     }
 
     @Override
     public void deliveryComplete(IMqttDeliveryToken token) {
-        // Not used by subscriber
+        // not used
     }
 }

@@ -7,33 +7,30 @@ import org.eclipse.paho.client.mqttv3.*;
 import java.nio.charset.StandardCharsets;
 
 public class MqttPublisher {
-
     private static final String BROKER_URL = "tcp://localhost:1883";
     private static final String CLIENT_ID  = "TicketSystemPublisher";
-    private static final String TOPIC      = "tickets/sold";
 
     private final MqttClient mqttClient;
     private final Gson gson = new Gson();
 
     public MqttPublisher() throws MqttException {
-        mqttClient = new MqttClient(BROKER_URL, CLIENT_ID);
-        MqttConnectOptions options = new MqttConnectOptions();
-        options.setCleanSession(true);
-        mqttClient.connect(options);
+        this.mqttClient = new MqttClient(BROKER_URL, CLIENT_ID);
+        MqttConnectOptions opts = new MqttConnectOptions();
+        opts.setCleanSession(true);
+        this.mqttClient.connect(opts);
     }
 
     /**
-     * Publishes the given Ticket as a JSON payload to the MQTT broker.
+     * Serialize the Ticket to JSON and publish it on the "ticket/issued" topic.
      */
     public void publishTicketInfo(Ticket ticket) throws MqttException {
-        // Serialize the Ticket object to JSON
         String json = gson.toJson(ticket);
-
-        MqttMessage message = new MqttMessage(json.getBytes(StandardCharsets.UTF_8));
-        message.setQos(1); // Quality of Service level
-        mqttClient.publish(TOPIC, message);
-
-        System.out.println("Published ticket info (JSON): " + json);
+        MqttMessage msg = new MqttMessage(json.getBytes(StandardCharsets.UTF_8));
+        msg.setQos(1);
+        // retain the last issued-ticket so late subscribers still receive it
+        msg.setRetained(true);
+        mqttClient.publish(Topics.TICKET_ISSUED, msg);
+        System.out.println("Published ticket info: " + json);
     }
 
     public void disconnect() throws MqttException {
