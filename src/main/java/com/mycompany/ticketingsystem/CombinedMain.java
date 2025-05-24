@@ -1,79 +1,89 @@
 package com.mycompany.ticketingsystem;
 
+import com.google.cloud.firestore.DocumentReference;
+import com.google.cloud.firestore.Firestore;
+
+import com.mycompany.ticketingsystem.auth.AuthService;
 import com.mycompany.ticketingsystem.config.FirebaseConfig;
 import com.mycompany.ticketingsystem.mqtt.MqttPublisher;
 import com.mycompany.ticketingsystem.mqtt.MqttSubscriber;
+import com.mycompany.ticketingsystem.model.JourneyPlan;
+import com.mycompany.ticketingsystem.model.PaymentTransaction;
 import com.mycompany.ticketingsystem.model.Ticket;
-import com.mycompany.ticketingsystem.service.PaymentService;
 import com.mycompany.ticketingsystem.service.JourneyPlanner;
+import com.mycompany.ticketingsystem.service.PaymentService;
 import com.mycompany.ticketingsystem.web.WebServer;
-import com.google.cloud.firestore.DocumentReference;
-import com.google.cloud.firestore.Firestore;
+
+import io.github.cdimascio.dotenv.Dotenv;
 
 import java.time.LocalDate;
 
 public class CombinedMain {
+
     public static void main(String[] args) throws Exception {
-        // 1) Initialize Firebase & clear the "tickets" collection
+
+        /* ─── load .env so FIREBASE_API_KEY is visible ─────────────────── */
+        Dotenv dotenv = Dotenv.configure().ignoreIfMissing().systemProperties().load();
+
+        /* ─── 1. Init Firebase & clear demo collections ────────────────── */
         FirebaseConfig.init();
         Firestore db = FirebaseConfig.getDb();
-        for (DocumentReference docRef : db.collection("tickets").listDocuments()) {
-            docRef.delete().get();
+        for (String coll : new String[]{"tickets", "payments", "plans"}) {
+            for (DocumentReference d : db.collection(coll).listDocuments()) d.delete();
         }
-        System.out.println("Cleared tickets collection on startup.");
+        System.out.println("Cleared tickets, payments, plans on startup.");
 
-        // 2) Launch the web server in a daemon thread
+        /* ─── 2. Get demo passenger & operator ID-tokens ───────────────── */
+        AuthService auth = new AuthService();
+        String paxToken = auth.login("demo.passenger@example.com", "pass123");
+        String opToken  = auth.login("demo.operator@example.com",   "op12345");
+
+        /* ─── 3. Start Spark web server on a daemon thread ─────────────── */
         Thread webThread = new Thread(() -> {
-            try {
-                WebServer.main(new String[]{});
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
-        }, "WebServer-Thread");
+            try { WebServer.main(new String[]{}); }
+            catch (Exception ex) { throw new RuntimeException(ex); }
+        }, "WebServer");
         webThread.setDaemon(true);
         webThread.start();
+        Thread.sleep(1500);
+        System.out.println("Web portal:  http://localhost:4567  (auto-refresh)");
 
-        // 3) Give Spark a moment to bind its port and set up routes
-        Thread.sleep(2000);
-        System.out.println("Web server should now be up on port 4567.");
+        /* ─── 4. MQTT endpoints (passenger JWT) ────────────────────────── */
+        MqttSubscriber subPassenger = new MqttSubscriber(paxToken);
+        MqttPublisher  pubPassenger = new MqttPublisher(paxToken);
 
-        // 4) Start MQTT subscriber & publisher (shared)
-        MqttSubscriber subscriber = new MqttSubscriber();
-        MqttPublisher  publisher  = new MqttPublisher();
+        /* ─── 5. Domain services (role-correct tokens) ─────────────────── */
+        PaymentService paymentSvc   = new PaymentService(opToken);
+        JourneyPlanner journeyPlan  = new JourneyPlanner(paxToken);
 
-        // 5) Create services with shared publisher
-        PaymentService paymentService   = new PaymentService();
-        JourneyPlanner journeyPlanner   = new JourneyPlanner();
-
-        // 6) Simulate issuing 10 tickets, one every 3 seconds
-        LocalDate today    = LocalDate.now();
-        LocalDate tomorrow = today.plusDays(1);
+        /* ─── 6. Issue 10 demo tickets ─────────────────────────────────── */
+        LocalDate today = LocalDate.now(), tomorrow = today.plusDays(1);
         for (int i = 1; i <= 10; i++) {
-            Ticket ticket = new Ticket(
-                    "TCKT" + i,
-                    "single-ride",
-                    2.50,
-                    today.toString(),
-                    tomorrow.toString()
-            );
-            publisher.publishTicketInfo(ticket);
-            Thread.sleep(3000);
+            Ticket t = new Ticket("TCKT"+i, "single-ride", 2.50,
+                    today.toString(), tomorrow.toString());
+            pubPassenger.publishTicketInfo(t);
+            System.out.println("Ticket inserted:  " + t.getTicketID());
+            Thread.sleep(1000);
         }
 
-        // 7) Simulate Payments: initiate and persist 5 payment requests
+        /* ─── 7. Insert 5 payments (prints to console) ─────────────────── */
         for (int i = 1; i <= 5; i++) {
-            paymentService.initiatePayment(2.50, "TCKT" + i);
-            Thread.sleep(2000);
+            PaymentTransaction tx =
+                    paymentSvc.initiatePayment(opToken, 2.50, "PAX"+i);
+            System.out.println("Payment inserted: " + tx.getTransactionID());
+            Thread.sleep(1000);
         }
 
-        // 8) Simulate Journey Plans: generate and persist 5 plans
+        /* ─── 8. Insert 5 journey plans (prints to console) ────────────── */
         for (int i = 1; i <= 5; i++) {
-            journeyPlanner.generatePlan("PAX" + i, "Route-" + i + ": A→B→C");
-            Thread.sleep(2000);
+            JourneyPlan jp = journeyPlan.generatePlan(
+                    paxToken, "PAX"+i, "Route-"+i+": A→B→C");
+            System.out.println("Plan inserted:    " + jp.getPlanID());
+            Thread.sleep(1000);
         }
 
-        // 9) Done publishing—keep JVM alive for inspection
-        System.out.println("Simulation complete; entering idle mode. Press Ctrl+C to quit.");
+        /* ─── 9. Idle for inspection ───────────────────────────────────── */
+        System.out.println("\nSimulation complete — check the web portal!");
         Thread.currentThread().join();
     }
 }
