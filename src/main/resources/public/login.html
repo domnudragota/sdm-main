@@ -1,53 +1,45 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="utf-8"/>
     <title>Ticket System – Login</title>
-    <style>
-        body { font-family: sans-serif; max-width: 320px; margin: 50px auto; }
-        label { display:block; margin:8px 0 2px; }
-        button { margin-top: 12px; width: 100%; }
-    </style>
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<h2>Login / Register</h2>
-<label>E-mail</label>
-<input id="email" type="email" required>
-<label>Password</label>
-<input id="pwd" type="password" required>
-<label><input id="isReg" type="checkbox"> Register new account</label>
-<button onclick="go()">Submit</button>
-<p id="msg" style="color:#c00;"></p>
+<main class="card">
+    <h2>Sign in / Register</h2>
+    <label>E-mail
+        <input id="email" type="email" autocomplete="username" required>
+    </label>
+
+    <label>Password
+        <input id="pwd" type="password" autocomplete="current-password" required>
+    </label>
+
+    <label><input id="isReg" type="checkbox"> Register new account</label>
+
+    <button onclick="go()">Continue</button>
+    <div id="error"></div>
+</main>
 
 <script>
-    async function go() {
-        const email = v('email'), password = v('pwd'),
-            isReg = document.getElementById('isReg').checked;
+    async function go(){
+        const email=v('email'),pwd=v('pwd'),reg=gi('isReg').checked;
+        if(!email||!pwd) return msg("Fill in both fields.");
+        const ep=reg?'/api/register':'/api/login';
+        const body={email,password:pwd};
+        if(reg) body.role= confirm("Are you a transport operator?\nOK = Yes") ? 'OPERATOR':'PASSENGER';
 
-        const ep   = isReg ? '/api/register' : '/api/login';
-        const role = isReg ? (confirm('Are you a transport operator? OK=yes') ?
-            'OPERATOR' : 'PASSENGER') : null;
+        const r=await fetch(ep,{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify(body)});
+        if(!r.ok) return msg(await r.text());
+        const {token}=await r.json(); localStorage.setItem('jwt',token);
 
-        const body = { email, password };
-        if (role) body.role = role;
-
-        const r = await fetch(ep, {
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body: JSON.stringify(body)
-        });
-        if (!r.ok) { document.getElementById('msg').textContent =
-            await r.text(); return; }
-
-        const {token} = await r.json();
-        localStorage.setItem('jwt', token);
-
-        // discover role → redirect
-        const me = await fetch('/api/me', {headers:{Authorization:'Bearer '+token}});
-        const {role: rRole} = await me.json();
-        location.href = rRole === 'OPERATOR' ? '/operator.html' : '/passenger.html';
+        const me=await fetch('/api/me',{headers:{Authorization:'Bearer '+token}}).then(r=>r.json());
+        location.href = me.role==='OPERATOR' ? 'operator.html' : 'passenger.html';
     }
-    function v(id){return document.getElementById(id).value.trim();}
+    function gi(id){return document.getElementById(id)}
+    function v(id){return gi(id).value.trim()}
+    function msg(t){gi('error').textContent=t}
 </script>
-</body>
-</html>
+</body></html>

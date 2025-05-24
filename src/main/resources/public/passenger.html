@@ -1,34 +1,43 @@
-<!DOCTYPE html>
-<html><head><meta charset="utf-8"/><title>Passenger dashboard</title>
-    <style>body{font-family:sans-serif;max-width:600px;margin:30px auto}
-    h2{margin-top:32px} table{border-collapse:collapse;width:100%}
-    td,th{border:1px solid #ccc;padding:4px}</style></head><body>
-<h1>Passenger dashboard</h1>
-<div id="who"></div>
+<!DOCTYPE html><html lang="en">
+<head>
+    <meta charset="utf-8"/><title>Passenger dashboard</title>
+    <link rel="stylesheet" href="style.css">
+</head><body>
+<header><h1>Passenger dashboard</h1><button onclick="logout()">Log out</button></header>
+<main>
+    <div id="who"></div>
 
-<h2>My tickets</h2><table id="tickets"></table>
-<h2>My journey plans</h2><table id="plans"></table>
+    <h2>My tickets</h2>
+    <table id="tickets">
+        <thead><tr><th>ID</th><th>Type</th><th>Issued</th></tr></thead>
+        <tbody></tbody>
+    </table>
+
+    <h2>My journey plans</h2>
+    <table id="plans">
+        <thead><tr><th>Plan&nbsp;ID</th><th>Route</th><th>ETA</th></tr></thead>
+        <tbody></tbody>
+    </table>
+</main>
 
 <script>
-    const token = localStorage.getItem('jwt');
-    if(!token) location.href='/login.html';
+    const jwt = localStorage.getItem('jwt'); if(!jwt) location.href='login.html';
+    const H   = {Authorization:'Bearer '+jwt};
 
-    const hdrs = {Authorization:'Bearer '+token};
-    fetch('/api/me', {headers:hdrs}).then(r=>r.json()).then(me=>{
-        document.getElementById('who').textContent = "UID: "+me.uid;
-        load('/tickets',       'tickets', t=>[t.ticketID,t.ticketType,t.issueDate]);
-        load('/plans',         'plans',   p=>[p.planID,p.routeDetails,p.estimatedTravelTime]);
+    fetch('/api/me',{headers:H}).then(r=>r.json()).then(me=>{
+        q('#who').textContent=`UID: ${me.uid}`;
+        load('/tickets','tickets',(t)=>[t.ticketID,t.ticketType,t.issueDate]);
+        load('/plans','plans',(p)=>[p.planID,p.routeDetails,p.estimatedTravelTime]);
     });
 
-    function load(ep, tblId, rowMap){
-        fetch(ep,{headers:hdrs}).then(r=>r.json()).then(arr=>{
-            const tbl=document.getElementById(tblId);
-            tbl.innerHTML='';
-            arr.forEach(o=>{
-                const tr=tbl.insertRow(); rowMap(o).forEach(
-                    v=>tr.insertCell().textContent=v);
-            });
+    function load(ep,id,row){
+        fetch(ep,{headers:H}).then(r=>r.json()).then(a=>{
+            const tbody=q('#'+id+' tbody'); tbody.innerHTML='';
+            a.forEach((o,i)=>{const tr=tbody.insertRow();tr.style.setProperty('--d',`${i*.25}s`);
+                row(o).forEach(v=>tr.insertCell().textContent=v);});
         });
     }
+    function logout(){localStorage.removeItem('jwt');location.href='login.html';}
+    function q(sel){return document.querySelector(sel)}
 </script>
 </body></html>
