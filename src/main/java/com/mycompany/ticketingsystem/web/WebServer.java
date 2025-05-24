@@ -4,12 +4,12 @@ import static spark.Spark.*;
 
 import com.google.api.core.ApiFuture;
 import com.google.cloud.firestore.*;
+import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.auth.FirebaseToken;
 import com.google.gson.Gson;
 
-import com.google.firebase.auth.*;
 import com.mycompany.ticketingsystem.auth.AuthService;
 import com.mycompany.ticketingsystem.auth.Role;
-import com.mycompany.ticketingsystem.auth.User;
 import com.mycompany.ticketingsystem.config.FirebaseConfig;
 import com.mycompany.ticketingsystem.model.JourneyPlan;
 import com.mycompany.ticketingsystem.model.PaymentTransaction;
@@ -18,7 +18,7 @@ import com.mycompany.ticketingsystem.model.Ticket;
 import java.util.List;
 import java.util.Map;
 
-/** Minimal HTTP layer: JSON API + auto-refreshing HTML dashboard. */
+/** JSON API + static UI + auto-refreshing HTML dashboard. */
 public class WebServer {
 
     private static final Gson gson = new Gson();
@@ -28,133 +28,117 @@ public class WebServer {
 
     public static void main(String[] args) throws Exception {
 
-        /* ---------- bootstrap Firebase ---------- */
+        /* ─── Firebase ───────────────────────────────────────────────── */
         FirebaseConfig.init();
         db        = FirebaseConfig.getDb();
         fbAuth    = FirebaseConfig.getAuth();
         usersColl = db.collection("users");
-
         AuthService authSvc = new AuthService();
 
-        /* ---------- Spark setup ---------- */
+        /* ─── Spark ──────────────────────────────────────────────────── */
         port(4567);
+        staticFileLocation("/public");               // login.html, dashboards…
 
-        /* ---------  CORS for local testing (optional) -------- */
-        options("/*", (req, res) -> {
-            String acrHeaders = req.headers("Access-Control-Request-Headers");
-            if (acrHeaders != null) res.header("Access-Control-Allow-Headers", acrHeaders);
-            String acrMethod = req.headers("Access-Control-Request-Method");
-            if (acrMethod != null)  res.header("Access-Control-Allow-Methods", acrMethod);
+        options("/*", (req,res)->{
+            String h=req.headers("Access-Control-Request-Headers");
+            if(h!=null) res.header("Access-Control-Allow-Headers",h);
+            String m=req.headers("Access-Control-Request-Method");
+            if(m!=null) res.header("Access-Control-Allow-Methods",m);
             return "OK";
         });
-        before((req, res) -> res.header("Access-Control-Allow-Origin", "*"));
+        before((req,res)-> res.header("Access-Control-Allow-Origin","*"));
 
-        /* ---------- PUBLIC: sign-up & sign-in ---------- */
+        /* ─── PUBLIC: register + login ──────────────────────────────── */
+        post("/api/register", (req,res)->{
+            Map<?,?> b=gson.fromJson(req.body(),Map.class);
+            String email=(String)b.get("email"), pwd=(String)b.get("password");
+            Role role=Role.valueOf(((String)b.get("role")).toUpperCase());
 
-        post("/api/register", (req, res) -> {
-            Map<?,?> payload = gson.fromJson(req.body(), Map.class);
-            String email    = (String) payload.get("email");
-            String password = (String) payload.get("password");
-            String roleStr  = (String) payload.get("role");
-            Role role       = Role.valueOf(roleStr.toUpperCase());
+            String tok = (role==Role.OPERATOR)
+                    ? authSvc.registerOperator(email,pwd)
+                    : authSvc.registerPassenger(email,pwd);
 
-            String token = (role == Role.OPERATOR)
-                    ? authSvc.registerOperator(email, password)
-                    : authSvc.registerPassenger(email, password);
-
-            res.type("application/json");
-            return "{\"token\":\"" + token + "\"}";
+            res.type("application/json"); return "{\"token\":\""+tok+"\"}";
         });
 
-        post("/api/login", (req, res) -> {
-            Map<?,?> payload = gson.fromJson(req.body(), Map.class);
-            String email    = (String) payload.get("email");
-            String password = (String) payload.get("password");     // kept for parity; not re-checked server-side
-            String token = authSvc.login(email, password);                // AuthService verifies user exists
-
-            res.type("application/json");
-            return "{\"token\":\"" + token + "\"}";
+        post("/api/login", (req,res)->{
+            Map<?,?> b=gson.fromJson(req.body(),Map.class);
+            String tok=authSvc.login((String)b.get("email"),(String)b.get("password"));
+            res.type("application/json"); return "{\"token\":\""+tok+"\"}";
         });
 
-        /* ---------- PROTECTED JSON endpoints ---------- */
+        /* ─── PUBLIC: who-am-I (UID + role) ─────────────────────────── */
+        get("/api/me", (req,res)->{
+            String hdr=req.headers("Authorization");
+            if(hdr==null||!hdr.startsWith("Bearer ")) halt(401,"Missing token");
+            FirebaseToken tok=fbAuth.verifyIdToken(hdr.substring(7));
 
-        before("/tickets",  requireRole(Role.PASSENGER));   // only passengers list their tickets
-        before("/plans",    requireRole(Role.PASSENGER));
-        before("/payments", requireRole(Role.OPERATOR));    // only operators audit payments
+            String role=(String)tok.getClaims().get("role");
+            if(role==null) role=usersColl.document(tok.getUid()).get().get().getString("role");
 
-        get("/tickets",  (req, res) -> toJson("tickets",  Ticket.class,  res));
-        get("/payments", (req, res) -> toJson("payments", PaymentTransaction.class, res));
-        get("/plans",    (req, res) -> toJson("plans",    JourneyPlan.class, res));
+            res.type("application/json");
+            return gson.toJson(Map.of("uid",tok.getUid(),"role",role));
+        });
 
-        /* ---------- auto-refreshing HTML dashboard ---------- */
+        /* ─── PROTECTED JSON endpoints ──────────────────────────────── */
+        before("/tickets",      requireRole(Role.PASSENGER));        // passenger owns tickets
+        before("/tickets/all",  requireRole(Role.OPERATOR));         // operator audit
+        before("/plans",        requireRole(Role.PASSENGER));
+        before("/payments",     requireRole(Role.OPERATOR));
 
-        get("/", (req, res) -> {
+        get("/tickets",      (rq,rs)-> toJson("tickets",  Ticket.class,  rs));
+        get("/tickets/all",  (rq,rs)-> toJson("tickets",  Ticket.class,  rs));
+        get("/payments",     (rq,rs)-> toJson("payments", PaymentTransaction.class, rs));
+        get("/plans",        (rq,rs)-> toJson("plans",    JourneyPlan.class, rs));
+
+        /* ─── Legacy auto-refresh dashboard ─────────────────────────── */
+        get("/", (req,res)->{
             res.type("text/html");
-            StringBuilder html = new StringBuilder()
+            StringBuilder h=new StringBuilder()
                     .append("<!DOCTYPE html><html><head>")
                     .append("<meta http-equiv=\"refresh\" content=\"10\">")
-                    .append("<title>Ticketing System Status</title>")
-                    .append("</head><body>")
+                    .append("<title>Ticketing System Status</title></head><body>")
                     .append("<h1>System Dashboard (updates every 10 s)</h1>");
 
-            appendList(html, "Issued Tickets",  "tickets",  Ticket.class);
-            appendList(html, "Payments",        "payments", PaymentTransaction.class);
-            appendList(html, "Journey Plans",   "plans",    JourneyPlan.class);
+            appendList(h,"Issued Tickets","tickets",Ticket.class);
+            appendList(h,"Payments","payments",PaymentTransaction.class);
+            appendList(h,"Journey Plans","plans",JourneyPlan.class);
 
-            html.append("</body></html>");
-            return html.toString();
+            return h.append("</body></html>").toString();
         });
     }
 
-    /* ---------- helpers ---------- */
-
-    private static <T> String toJson(String coll, Class<T> cls, spark.Response res) throws Exception {
-        List<T> list = db.collection(coll).get().get().toObjects(cls);
-        res.type("application/json");
-        return gson.toJson(list);
+    /* ─── util: read collection & JSON serialise ────────────────────── */
+    private static <T> String toJson(String coll, Class<T> cls, spark.Response res) throws Exception{
+        List<T> list=db.collection(coll).get().get().toObjects(cls);
+        res.type("application/json"); return gson.toJson(list);
     }
 
-    /** Small Spark 'before' filter factory that enforces a single role. */
-    private static spark.Filter requireRole(Role required) {
-        return (req, res) -> {
-            String hdr = req.headers("Authorization");
-            if (hdr == null || !hdr.startsWith("Bearer "))
-                halt(401, "Missing Bearer token");
+    /* ─── role filter (accepts multiple roles) ──────────────────────── */
+    private static spark.Filter requireRole(Role... allowed){
+        return (req,res)->{
+            String hdr=req.headers("Authorization");
+            if(hdr==null||!hdr.startsWith("Bearer ")) halt(401,"Missing Bearer token");
 
-            String token = hdr.substring(7);
-            FirebaseToken decoded;
-            try {
-                decoded = fbAuth.verifyIdToken(token);
-            } catch (Exception e) {
-                halt(401, "Invalid token: " + e.getMessage());
-                return;
-            }
+            FirebaseToken tok=fbAuth.verifyIdToken(hdr.substring(7));
+            DocumentSnapshot doc=usersColl.document(tok.getUid()).get().get();
+            if(!doc.exists()) halt(403,"User not found");
 
-            String uid = decoded.getUid();
-            ApiFuture<DocumentSnapshot> snap = usersColl.document(uid).get();
-            DocumentSnapshot doc = snap.get();
-            if (!doc.exists()) halt(403, "User not found");
-
-            Role role = Role.valueOf(doc.getString("role"));
-            if (role != required)
-                halt(403, "Forbidden for role " + role);
-
-            /* stash uid/role so downstream handlers can use it if needed */
-            req.attribute("uid",  uid);
-            req.attribute("role", role);
+            Role caller=Role.valueOf(doc.getString("role"));
+            for(Role r:allowed) if(caller==r) { req.attribute("uid",tok.getUid()); return; }
+            halt(403,"Forbidden for role "+caller);
         };
     }
 
-    private static <T> void appendList(StringBuilder html,
-                                       String title,
-                                       String coll,
-                                       Class<T> cls) {
+    /* ─── util: append list to legacy HTML page ─────────────────────── */
+    private static <T> void appendList(StringBuilder html,String title,
+                                       String coll,Class<T> cls){
         html.append("<h2>").append(title).append("</h2><ul>");
-        try {
-            for (T obj : db.collection(coll).get().get().toObjects(cls)) {
+        try{
+            for(T obj: db.collection(coll).get().get().toObjects(cls)){
                 html.append("<li>").append(gson.toJson(obj)).append("</li>");
             }
-        } catch (Exception e) {
+        }catch(Exception e){
             html.append("<li>Error loading ").append(coll).append(": ")
                     .append(e.getMessage()).append("</li>");
         }
